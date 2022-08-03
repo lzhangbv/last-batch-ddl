@@ -1,0 +1,115 @@
+wandb_version: 1
+
+_wandb:
+  desc: null
+  value:
+    cli_version: 0.12.11
+    code_path: code/examples/pytorch_cifar10_resnet.py
+    framework: torch
+    is_jupyter_run: false
+    is_kaggle_kernel: false
+    python_version: 3.7.4
+    start_time: 1659412346
+    t:
+      1:
+      - 1
+      - 41
+      2:
+      - 1
+      - 41
+      3:
+      - 13
+      - 16
+      4: 3.7.4
+      5: 0.12.11
+      8:
+      - 5
+autoaugment:
+  desc: null
+  value: 0
+base_lr:
+  desc: null
+  value: 0.1
+batch_size:
+  desc: null
+  value: 128
+cuda:
+  desc: null
+  value: true
+cutmix:
+  desc: null
+  value: 0
+cutout:
+  desc: null
+  value: 0
+dataset:
+  desc: null
+  value: cifar10
+dir:
+  desc: null
+  value: /datasets/cifar10
+epochs:
+  desc: null
+  value: 100
+fp16_allreduce:
+  desc: null
+  value: false
+label_smoothing:
+  desc: null
+  value: 0
+last_batch:
+  desc: null
+  value: 0
+local_rank:
+  desc: null
+  value: 0
+log_dir:
+  desc: null
+  value: ./logs
+lr_decay:
+  desc: null
+  value:
+  - 50.0
+  - 75.0
+lr_decay_alpha:
+  desc: null
+  value: 0.1
+lr_schedule:
+  desc: null
+  value: cosine
+mixup:
+  desc: null
+  value: 0
+model:
+  desc: null
+  value: resnet32
+momentum:
+  desc: null
+  value: 0.9
+no_cuda:
+  desc: null
+  value: false
+pretrained_dir:
+  desc: null
+  value: /datasets/pretrained_models/
+seed:
+  desc: null
+  value: 42
+test_batch_size:
+  desc: null
+  value: 128
+use_adam:
+  desc: null
+  value: 0
+use_pretrained_model:
+  desc: null
+  value: 0
+verbose:
+  desc: null
+  value: true
+warmup_epochs:
+  desc: null
+  value: 5
+weight_decay:
+  desc: null
+  value: 0.0005

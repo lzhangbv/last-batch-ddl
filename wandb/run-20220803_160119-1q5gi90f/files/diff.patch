@@ -1,0 +1,292 @@
+diff --git a/configs/envs.conf b/configs/envs.conf
+index d9576b4..edb2a8d 100644
+--- a/configs/envs.conf
++++ b/configs/envs.conf
+@@ -1,8 +1,6 @@
+ # -- Common configurations
+-#export PY=/home/esetstore/bytescheduler/bin/python
+-export PY="/home/esetstore/pytorch1.8/bin/python -W ignore"
+-#export PY="/home/esetstore/pytorch1.10/bin/python -W ignore"
+-#export PY="/home/esetstore/sc22sgd/bin/python -W ignore"
++#export PY="/home/esetstore/pytorch1.8/bin/python -W ignore"
++export PY="/home/esetstore/pytorch1.10/bin/python -W ignore"
+ export IB_INTERFACE=ib0
+ export ETH_INTERFACE=enp136s0f0,enp137s0f0
+ 
+diff --git a/examples/pytorch_cifar10_resnet.py b/examples/pytorch_cifar10_resnet.py
+index c9e918e..0939faf 100644
+--- a/examples/pytorch_cifar10_resnet.py
++++ b/examples/pytorch_cifar10_resnet.py
+@@ -16,6 +16,9 @@ strhdlr = logging.StreamHandler()
+ strhdlr.setFormatter(formatter)
+ logger.addHandler(strhdlr) 
+ 
++import wandb
++#wandb = False
++
+ import torch
+ import torch.nn as nn
+ import torch.nn.functional as F
+@@ -83,6 +86,10 @@ def initialize():
+     parser.add_argument('--pretrained-dir', type=str, default='/datasets/pretrained_models/',
+                         help='pretrained model dir')
+ 
++    # Last-batch Parameters
++    parser.add_argument('--last-batch', type=int, default=1,
++                        help='enable last batch optimizations')
++
+     # Other Parameters
+     parser.add_argument('--log-dir', default='./logs',
+                         help='log directory')
+@@ -104,7 +111,6 @@ def initialize():
+ 
+     # Training Settings
+     args.cuda = not args.no_cuda and torch.cuda.is_available()
+-    args.use_kfac = True if args.kfac_update_freq > 0 else False
+     
+     if args.lr_decay[0] < 1.0: # epoch number percent
+         args.lr_decay = [args.epochs * p for p in args.lr_decay]
+@@ -127,7 +133,7 @@ def initialize():
+     # Logging Settings
+     os.makedirs(args.log_dir, exist_ok=True)
+     logfile = os.path.join(args.log_dir,
+-        '{}_{}_ep{}_bs{}_gpu{}_kfac{}_{}_{}_smooth{}_cutmix{}_aa{}_cutout{}.log'.format(args.dataset, args.model, args.epochs, args.batch_size, hvd.size(), args.kfac_update_freq, args.kfac_name, args.lr_schedule, args.label_smoothing, args.cutmix, args.autoaugment, args.cutout))
++        '{}_{}_ep{}_bs{}_gpu{}_lb{}_{}_warmup{}_cutmix{}_aa{}.log'.format(args.dataset, args.model, args.epochs, args.batch_size, hvd.size(), args.last_batch, args.lr_schedule,args.warmup_epochs, args.cutmix, args.autoaugment))
+ 
+     hdlr = logging.FileHandler(logfile)
+     hdlr.setFormatter(formatter)
+@@ -138,6 +144,9 @@ def initialize():
+     if args.verbose:
+         logger.info("torch version: %s", torch.__version__)
+         logger.info(args)
++
++    if args.verbose and wandb:
++        wandb.init(project="last-batch-opt", entity="hkust-distributedml", name=logfile, config=args)
+     
+     return args
+ 
+@@ -231,7 +240,7 @@ def get_model(args):
+         criterion = nn.CrossEntropyLoss()
+ 
+     args.base_lr = args.base_lr * hvd.size()
+-    if args.use_adam and not args.use_kfac:
++    if args.use_adam:
+         optimizer = optim.Adam(model.parameters(), 
+                 lr=args.base_lr, 
+                 betas=(0.9, 0.999), 
+@@ -242,14 +251,18 @@ def get_model(args):
+                 momentum=args.momentum,
+                 weight_decay=args.weight_decay)
+ 
+-    optimizer = hvd.DistributedOptimizer(optimizer, named_parameters=model.named_parameters())
+-
+-    # Distributed data parallel
+-    model = torch.nn.parallel.DistributedDataParallel(model, device_ids=[args.local_rank])
++    if args.last_batch:
++        #optimizer = hvd.DistributedOptimizer(optimizer, named_parameters=model.named_parameters(), warmup_steps=0)
++        optimizer = hvd.DistributedOptimizer(optimizer, named_parameters=model.named_parameters(), warmup_steps=args.warmup_epochs * args.num_steps_per_epoch)
++    else:
++        model = torch.nn.parallel.DistributedDataParallel(model, device_ids=[args.local_rank])
+ 
+     # Learning Rate Schedule
+     if args.lr_schedule == 'cosine':
+-        lrs = create_cosine_lr_schedule(args.warmup_epochs * args.num_steps_per_epoch, args.epochs * args.num_steps_per_epoch)
++        #lrs = create_cosine_lr_schedule(args.warmup_epochs * args.num_steps_per_epoch, args.epochs * args.num_steps_per_epoch)
++        #if args.last_batch: 
++            #lrs = create_cosine_lr_schedule_with_window(args.warmup_epochs * args.num_steps_per_epoch, args.num_steps_per_epoch, args.epochs * args.num_steps_per_epoch)
++        lrs = create_cosine_lr_schedule_with_window(args.warmup_epochs * args.num_steps_per_epoch, args.warmup_epochs * args.num_steps_per_epoch, args.epochs * args.num_steps_per_epoch)
+     elif args.lr_schedule == 'polynomial':
+         lrs = create_polynomial_lr_schedule(args.base_lr, args.warmup_epochs * args.num_steps_per_epoch, args.epochs * args.num_steps_per_epoch, lr_end=0.0, power=2.0)
+     elif args.lr_schedule == 'step':
+@@ -259,7 +272,7 @@ def get_model(args):
+ 
+     return model, optimizer, lr_scheduler, criterion
+ 
+-def train(epoch, model, optimizer, preconditioner, lr_scheduler, criterion, train_sampler, train_loader, args):
++def train(epoch, model, optimizer, lr_scheduler, criterion, train_sampler, train_loader, args):
+     model.train()
+     train_sampler.set_epoch(epoch)
+     if args.cutmix:
+@@ -305,6 +318,10 @@ def train(epoch, model, optimizer, preconditioner, lr_scheduler, criterion, trai
+         loss.backward()
+         optimizer.step()
+         avg_time += (time.time()-stime)
++        
++        #if args.verbose:
++        #    logger.info("[%d][%d] train loss: %.4f, acc: %.3f" % (epoch, batch_idx, train_loss.avg.item(), 100*train_accuracy.avg.item()))
++
+             
+         if (batch_idx + 1) % display == 0:
+             if args.verbose and SPEED:
+@@ -322,6 +339,8 @@ def train(epoch, model, optimizer, preconditioner, lr_scheduler, criterion, trai
+ 
+     if args.verbose:
+         logger.info("[%d] epoch train loss: %.4f, acc: %.3f" % (epoch, train_loss.avg.item(), 100*train_accuracy.avg.item()))
++        if wandb:
++            wandb.log({"train loss": train_loss.avg.item(), "train acc": train_accuracy.avg.item()})
+ 
+     if args.lr_schedule == 'step':
+         lr_scheduler.step()
+@@ -347,6 +366,8 @@ def test(epoch, model, criterion, test_loader, args):
+             
+     if args.verbose:
+         logger.info("[%d] evaluation loss: %.4f, acc: %.3f" % (epoch, test_loss.avg.item(), 100*test_accuracy.avg.item()))
++        if wandb:
++            wandb.log({"eval loss": test_loss.avg.item(), "eval acc": test_accuracy.avg.item()})
+ 
+ 
+ if __name__ == '__main__':
+diff --git a/examples/utils.py b/examples/utils.py
+index ef0183e..ec3235c 100644
+--- a/examples/utils.py
++++ b/examples/utils.py
+@@ -230,6 +230,16 @@ def create_cosine_lr_schedule(num_warmup_steps, num_training_steps, num_cycles=0
+         return max(0.0, 0.5 * (1.0 + math.cos(math.pi * float(num_cycles) * 2.0 * progress)))
+     return lr_schedule
+ 
++def create_cosine_lr_schedule_with_window(num_warmup_steps, num_window_steps, num_training_steps, num_cycles=0.5):
++    def lr_schedule(current_step: int):
++        if current_step < num_warmup_steps:
++            return float(current_step) / float(max(1, num_warmup_steps))
++        elif current_step < num_warmup_steps + num_window_steps:
++            return 0.5 * float(current_step - num_warmup_steps) / float(num_window_steps)
++        progress = float(current_step - num_warmup_steps - num_window_steps) / float(max(1, num_training_steps - num_warmup_steps - num_window_steps))
++        return 0.5 * max(0.0, 0.5 * (1.0 + math.cos(math.pi * float(num_cycles) * 2.0 * progress)))
++    return lr_schedule
++
+ # F1mc: sample pseudo labels from model distributions
+ def generate_pseudo_labels(outputs):
+     """
+diff --git a/opt/fpdp.py b/opt/fpdp.py
+index f549ec3..b52ef32 100644
+--- a/opt/fpdp.py
++++ b/opt/fpdp.py
+@@ -36,12 +36,14 @@ def size():
+     return dist.get_world_size()
+ 
+ class _DistributedOptimizer(torch.optim.Optimizer):
+-    def __init__(self, params, named_parameters, compression):
++    def __init__(self, params, named_parameters, warmup_steps, compression):
+         """
+         Distributed optimizer with fully pipelined data parallelism.
+         """
+         super(self.__class__, self).__init__(params)
+         self._num_steps = 0
++        assert warmup_steps >= 0
++        self._warmup_steps = warmup_steps # warmup steps for synchronized algorithms before last-batch
+ 
+         # parameter names
+         if named_parameters is not None:
+@@ -98,21 +100,47 @@ class _DistributedOptimizer(torch.optim.Optimizer):
+         reduced_grad.copy_(tmp.view(-1))
+         del tmp
+ 
++    def _allreduce_grad(self):
++        """Aggregate current gradients once to update model parameters during warmup."""
++        for p in self._register_parameters:
++            param_name = self._param_names[p]
++            start_p, end_p = self._param_buffer_idx[param_name]
++            # push all gradients into the buffer
++            self._grad_buffer[start_p:end_p].copy_(p.grad.data.view(-1))
++        
++        # all-reduce the buffer
++        dist.all_reduce(self._grad_buffer)
++        self._grad_buffer.div_(dist.get_world_size())
++        
++        for p in self._register_parameters:
++            param_name = self._param_names[p]
++            start_p, end_p = self._param_buffer_idx[param_name]
++            # pull all gradients from the buffer
++            p.grad.data.view(-1).copy_(self._grad_buffer[start_p:end_p])
++
+     def step(self, closure=None):
+         """Performs a single optimization step."""
+         
+         if dist.get_world_size() > 1:
+-            # sync grad reduction in the buffer
+-            if self._num_steps > 0:
+-                torch.cuda.current_stream().wait_stream(self._comm_stream)
++            if self._num_steps < self._warmup_steps: 
++                # warmup
++                self._allreduce_grad()
++            else:
++                # transition
++                #if self._num_steps == self._warmup_steps:
++                #    self.state = collections.defaultdict(dict)
++                
++                # sync grad reduction in the buffer
++                if self._num_steps > self._warmup_steps:
++                    torch.cuda.current_stream().wait_stream(self._comm_stream)
+             
+-            # swap p.grad and reduced grad in the buffer
+-            self._update_grad_with_buffer()
++                # swap p.grad and reduced grad in the buffer
++                self._update_grad_with_buffer()
+ 
+-            # start all-reducing new grads in the buffer
+-            self._comm_stream.wait_stream(torch.cuda.current_stream())
+-            with torch.cuda.stream(self._comm_stream):
+-                dist.all_reduce(self._grad_buffer)
++                # start all-reducing new grads in the buffer
++                self._comm_stream.wait_stream(torch.cuda.current_stream())
++                with torch.cuda.stream(self._comm_stream):
++                    dist.all_reduce(self._grad_buffer)
+ 
+         super(self.__class__, self).step(closure)
+         self._num_steps += 1
+@@ -122,7 +150,7 @@ class _DistributedOptimizer(torch.optim.Optimizer):
+             torch.cuda.synchronize()
+ 
+ 
+-def DistributedOptimizer(optimizer, named_parameters, compression=None):
++def DistributedOptimizer(optimizer, named_parameters, warmup_steps, compression=None):
+     """
+     Arguments:
+         optimizer: Optimizer to use for computing gradients and applying updates.
+@@ -157,7 +185,7 @@ def DistributedOptimizer(optimizer, named_parameters, compression=None):
+     cls = type(optimizer.__class__.__name__, (optimizer.__class__,),
+                dict(_DistributedOptimizer.__dict__))
+ 
+-    return cls(optimizer.param_groups, named_parameters, compression)
++    return cls(optimizer.param_groups, named_parameters, warmup_steps, compression)
+ 
+ def broadcast_parameters(params, root_rank):
+     """
+diff --git a/train_cifar10.sh b/train_cifar10.sh
+index 3039d87..ac4c064 100755
+--- a/train_cifar10.sh
++++ b/train_cifar10.sh
+@@ -25,20 +25,24 @@ cutout="${cutout:-0}"
+ autoaugment="${autoaugment:-0}"
+ use_pretrained_model="${use_pretrained_model:-0}"
+ 
+-# second-order hyper
+-kfac="${kfac:-1}"
+-fac="${fac:-1}"
+-kfac_name="${kfac_name:-eva}"
+-damping="${damping:-0.03}"
+-stat_decay="${stat_decay:-0.95}"
+-kl_clip="${kl_clip:-0.01}"
++# last batch hyper
++last_batch="${last_batch:-1}"
+ 
+-horovod="${horovod:-1}"
+-params="--horovod $horovod --dataset $dataset --dir /datasets/cifar10 --model $dnn --batch-size $batch_size --base-lr $base_lr --lr-schedule $lr_schedule --lr-decay $lr_decay --epochs $epochs --warmup-epochs $warmup_epochs --momentum $momentum --use-adam $use_adam --weight-decay $weight_decay --label-smoothing $label_smoothing --mixup $mixup --cutmix $cutmix --autoaugment $autoaugment --cutout $cutout --use-pretrained-model $use_pretrained_model --kfac-update-freq $kfac --kfac-cov-update-freq $fac --kfac-name $kfac_name --stat-decay $stat_decay --damping $damping --kl-clip $kl_clip"
++horovod="${horovod:-0}"
++params="--dataset $dataset --dir /datasets/cifar10 --model $dnn --batch-size $batch_size --base-lr $base_lr --lr-schedule $lr_schedule --lr-decay $lr_decay --epochs $epochs --warmup-epochs $warmup_epochs --momentum $momentum --use-adam $use_adam --weight-decay $weight_decay --label-smoothing $label_smoothing --mixup $mixup --cutmix $cutmix --autoaugment $autoaugment --cutout $cutout --use-pretrained-model $use_pretrained_model --last-batch $last_batch"
+ 
+ nworkers="${nworkers:-4}"
+ rdma="${rdma:-1}"
+ clusterprefix="${clusterprefix:-cluster}"
+ 
++ngpu_per_node="${ngpu_per_node:-4}"
++node_count="${node_count:-1}"
++node_rank="${node_rank:-1}"
++
+ script=examples/pytorch_cifar10_resnet.py
++
++if [ "$horovod" = "1" ]; then
+ clusterprefix=$clusterprefix nworkers=$nworkers rdma=$rdma script=$script params=$params bash launch_horovod.sh
++else
++ngpu_per_node=$ngpu_per_node node_count=$node_count node_rank=$node_rank script=$script params=$params bash launch_torch.sh
++fi

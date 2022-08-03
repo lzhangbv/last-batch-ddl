@@ -1,0 +1,1 @@
+{"train loss": 0.10596221685409546, "train acc": 0.9650070071220398, "_timestamp": 1659494205, "_runtime": 422, "_step": 199, "eval loss": 0.3016458749771118, "eval acc": 0.9052274823188782, "_wandb": {"runtime": 421}}

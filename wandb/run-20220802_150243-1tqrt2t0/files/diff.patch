@@ -1,0 +1,156 @@
+diff --git a/configs/envs.conf b/configs/envs.conf
+index d9576b4..edb2a8d 100644
+--- a/configs/envs.conf
++++ b/configs/envs.conf
+@@ -1,8 +1,6 @@
+ # -- Common configurations
+-#export PY=/home/esetstore/bytescheduler/bin/python
+-export PY="/home/esetstore/pytorch1.8/bin/python -W ignore"
+-#export PY="/home/esetstore/pytorch1.10/bin/python -W ignore"
+-#export PY="/home/esetstore/sc22sgd/bin/python -W ignore"
++#export PY="/home/esetstore/pytorch1.8/bin/python -W ignore"
++export PY="/home/esetstore/pytorch1.10/bin/python -W ignore"
+ export IB_INTERFACE=ib0
+ export ETH_INTERFACE=enp136s0f0,enp137s0f0
+ 
+diff --git a/examples/pytorch_cifar10_resnet.py b/examples/pytorch_cifar10_resnet.py
+index c9e918e..1d3db12 100644
+--- a/examples/pytorch_cifar10_resnet.py
++++ b/examples/pytorch_cifar10_resnet.py
+@@ -16,6 +16,9 @@ strhdlr = logging.StreamHandler()
+ strhdlr.setFormatter(formatter)
+ logger.addHandler(strhdlr) 
+ 
++import wandb
++#wandb = False
++
+ import torch
+ import torch.nn as nn
+ import torch.nn.functional as F
+@@ -83,6 +86,10 @@ def initialize():
+     parser.add_argument('--pretrained-dir', type=str, default='/datasets/pretrained_models/',
+                         help='pretrained model dir')
+ 
++    # Last-batch Parameters
++    parser.add_argument('--last-batch', type=int, default=1,
++                        help='enable last batch optimizations')
++
+     # Other Parameters
+     parser.add_argument('--log-dir', default='./logs',
+                         help='log directory')
+@@ -104,7 +111,6 @@ def initialize():
+ 
+     # Training Settings
+     args.cuda = not args.no_cuda and torch.cuda.is_available()
+-    args.use_kfac = True if args.kfac_update_freq > 0 else False
+     
+     if args.lr_decay[0] < 1.0: # epoch number percent
+         args.lr_decay = [args.epochs * p for p in args.lr_decay]
+@@ -127,7 +133,7 @@ def initialize():
+     # Logging Settings
+     os.makedirs(args.log_dir, exist_ok=True)
+     logfile = os.path.join(args.log_dir,
+-        '{}_{}_ep{}_bs{}_gpu{}_kfac{}_{}_{}_smooth{}_cutmix{}_aa{}_cutout{}.log'.format(args.dataset, args.model, args.epochs, args.batch_size, hvd.size(), args.kfac_update_freq, args.kfac_name, args.lr_schedule, args.label_smoothing, args.cutmix, args.autoaugment, args.cutout))
++        '{}_{}_ep{}_bs{}_gpu{}_lb{}_{}_cutmix{}_aa{}.log'.format(args.dataset, args.model, args.epochs, args.batch_size, hvd.size(), args.last_batch, args.lr_schedule, args.cutmix, args.autoaugment))
+ 
+     hdlr = logging.FileHandler(logfile)
+     hdlr.setFormatter(formatter)
+@@ -138,6 +144,9 @@ def initialize():
+     if args.verbose:
+         logger.info("torch version: %s", torch.__version__)
+         logger.info(args)
++
++    if args.verbose and wandb:
++        wandb.init(project="last-batch-opt", entity="hkust-distributedml", name=logfile, config=args)
+     
+     return args
+ 
+@@ -231,7 +240,7 @@ def get_model(args):
+         criterion = nn.CrossEntropyLoss()
+ 
+     args.base_lr = args.base_lr * hvd.size()
+-    if args.use_adam and not args.use_kfac:
++    if args.use_adam:
+         optimizer = optim.Adam(model.parameters(), 
+                 lr=args.base_lr, 
+                 betas=(0.9, 0.999), 
+@@ -242,10 +251,10 @@ def get_model(args):
+                 momentum=args.momentum,
+                 weight_decay=args.weight_decay)
+ 
+-    optimizer = hvd.DistributedOptimizer(optimizer, named_parameters=model.named_parameters())
+-
+-    # Distributed data parallel
+-    model = torch.nn.parallel.DistributedDataParallel(model, device_ids=[args.local_rank])
++    if args.last_batch:
++        optimizer = hvd.DistributedOptimizer(optimizer, named_parameters=model.named_parameters())
++    else:
++        model = torch.nn.parallel.DistributedDataParallel(model, device_ids=[args.local_rank])
+ 
+     # Learning Rate Schedule
+     if args.lr_schedule == 'cosine':
+@@ -259,7 +268,7 @@ def get_model(args):
+ 
+     return model, optimizer, lr_scheduler, criterion
+ 
+-def train(epoch, model, optimizer, preconditioner, lr_scheduler, criterion, train_sampler, train_loader, args):
++def train(epoch, model, optimizer, lr_scheduler, criterion, train_sampler, train_loader, args):
+     model.train()
+     train_sampler.set_epoch(epoch)
+     if args.cutmix:
+@@ -322,6 +331,8 @@ def train(epoch, model, optimizer, preconditioner, lr_scheduler, criterion, trai
+ 
+     if args.verbose:
+         logger.info("[%d] epoch train loss: %.4f, acc: %.3f" % (epoch, train_loss.avg.item(), 100*train_accuracy.avg.item()))
++        if wandb:
++            wandb.log({"train loss": train_loss.avg.item(), "train acc": train_accuracy.avg.item()})
+ 
+     if args.lr_schedule == 'step':
+         lr_scheduler.step()
+@@ -347,6 +358,8 @@ def test(epoch, model, criterion, test_loader, args):
+             
+     if args.verbose:
+         logger.info("[%d] evaluation loss: %.4f, acc: %.3f" % (epoch, test_loss.avg.item(), 100*test_accuracy.avg.item()))
++        if wandb:
++            wandb.log({"eval loss": test_loss.avg.item(), "eval acc": test_accuracy.avg.item()})
+ 
+ 
+ if __name__ == '__main__':
+diff --git a/train_cifar10.sh b/train_cifar10.sh
+index 3039d87..ac4c064 100755
+--- a/train_cifar10.sh
++++ b/train_cifar10.sh
+@@ -25,20 +25,24 @@ cutout="${cutout:-0}"
+ autoaugment="${autoaugment:-0}"
+ use_pretrained_model="${use_pretrained_model:-0}"
+ 
+-# second-order hyper
+-kfac="${kfac:-1}"
+-fac="${fac:-1}"
+-kfac_name="${kfac_name:-eva}"
+-damping="${damping:-0.03}"
+-stat_decay="${stat_decay:-0.95}"
+-kl_clip="${kl_clip:-0.01}"
++# last batch hyper
++last_batch="${last_batch:-1}"
+ 
+-horovod="${horovod:-1}"
+-params="--horovod $horovod --dataset $dataset --dir /datasets/cifar10 --model $dnn --batch-size $batch_size --base-lr $base_lr --lr-schedule $lr_schedule --lr-decay $lr_decay --epochs $epochs --warmup-epochs $warmup_epochs --momentum $momentum --use-adam $use_adam --weight-decay $weight_decay --label-smoothing $label_smoothing --mixup $mixup --cutmix $cutmix --autoaugment $autoaugment --cutout $cutout --use-pretrained-model $use_pretrained_model --kfac-update-freq $kfac --kfac-cov-update-freq $fac --kfac-name $kfac_name --stat-decay $stat_decay --damping $damping --kl-clip $kl_clip"
++horovod="${horovod:-0}"
++params="--dataset $dataset --dir /datasets/cifar10 --model $dnn --batch-size $batch_size --base-lr $base_lr --lr-schedule $lr_schedule --lr-decay $lr_decay --epochs $epochs --warmup-epochs $warmup_epochs --momentum $momentum --use-adam $use_adam --weight-decay $weight_decay --label-smoothing $label_smoothing --mixup $mixup --cutmix $cutmix --autoaugment $autoaugment --cutout $cutout --use-pretrained-model $use_pretrained_model --last-batch $last_batch"
+ 
+ nworkers="${nworkers:-4}"
+ rdma="${rdma:-1}"
+ clusterprefix="${clusterprefix:-cluster}"
+ 
++ngpu_per_node="${ngpu_per_node:-4}"
++node_count="${node_count:-1}"
++node_rank="${node_rank:-1}"
++
+ script=examples/pytorch_cifar10_resnet.py
++
++if [ "$horovod" = "1" ]; then
+ clusterprefix=$clusterprefix nworkers=$nworkers rdma=$rdma script=$script params=$params bash launch_horovod.sh
++else
++ngpu_per_node=$ngpu_per_node node_count=$node_count node_rank=$node_rank script=$script params=$params bash launch_torch.sh
++fi

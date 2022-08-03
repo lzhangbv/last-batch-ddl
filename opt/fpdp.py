@@ -36,12 +36,14 @@ def size():
     return dist.get_world_size()
 
 class _DistributedOptimizer(torch.optim.Optimizer):
-    def __init__(self, params, named_parameters, compression):
+    def __init__(self, params, named_parameters, warmup_steps, compression):
         """
         Distributed optimizer with fully pipelined data parallelism.
         """
         super(self.__class__, self).__init__(params)
         self._num_steps = 0
+        assert warmup_steps >= 0
+        self._warmup_steps = warmup_steps # warmup steps for synchronized algorithms before last-batch
 
         # parameter names
         if named_parameters is not None:
@@ -98,21 +100,47 @@ class _DistributedOptimizer(torch.optim.Optimizer):
         reduced_grad.copy_(tmp.view(-1))
         del tmp
 
+    def _allreduce_grad(self):
+        """Aggregate current gradients once to update model parameters during warmup."""
+        for p in self._register_parameters:
+            param_name = self._param_names[p]
+            start_p, end_p = self._param_buffer_idx[param_name]
+            # push all gradients into the buffer
+            self._grad_buffer[start_p:end_p].copy_(p.grad.data.view(-1))
+        
+        # all-reduce the buffer
+        dist.all_reduce(self._grad_buffer)
+        self._grad_buffer.div_(dist.get_world_size())
+        
+        for p in self._register_parameters:
+            param_name = self._param_names[p]
+            start_p, end_p = self._param_buffer_idx[param_name]
+            # pull all gradients from the buffer
+            p.grad.data.view(-1).copy_(self._grad_buffer[start_p:end_p])
+
     def step(self, closure=None):
         """Performs a single optimization step."""
         
         if dist.get_world_size() > 1:
-            # sync grad reduction in the buffer
-            if self._num_steps > 0:
-                torch.cuda.current_stream().wait_stream(self._comm_stream)
+            if self._num_steps < self._warmup_steps: 
+                # warmup
+                self._allreduce_grad()
+            else:
+                # transition
+                #if self._num_steps == self._warmup_steps:
+                #    self.state = collections.defaultdict(dict)
+                
+                # sync grad reduction in the buffer
+                if self._num_steps > self._warmup_steps:
+                    torch.cuda.current_stream().wait_stream(self._comm_stream)
             
-            # swap p.grad and reduced grad in the buffer
-            self._update_grad_with_buffer()
+                # swap p.grad and reduced grad in the buffer
+                self._update_grad_with_buffer()
 
-            # start all-reducing new grads in the buffer
-            self._comm_stream.wait_stream(torch.cuda.current_stream())
-            with torch.cuda.stream(self._comm_stream):
-                dist.all_reduce(self._grad_buffer)
+                # start all-reducing new grads in the buffer
+                self._comm_stream.wait_stream(torch.cuda.current_stream())
+                with torch.cuda.stream(self._comm_stream):
+                    dist.all_reduce(self._grad_buffer)
 
         super(self.__class__, self).step(closure)
         self._num_steps += 1
@@ -122,7 +150,7 @@ class _DistributedOptimizer(torch.optim.Optimizer):
             torch.cuda.synchronize()
 
 
-def DistributedOptimizer(optimizer, named_parameters, compression=None):
+def DistributedOptimizer(optimizer, named_parameters, warmup_steps, compression=None):
     """
     Arguments:
         optimizer: Optimizer to use for computing gradients and applying updates.
@@ -157,7 +185,7 @@ def DistributedOptimizer(optimizer, named_parameters, compression=None):
     cls = type(optimizer.__class__.__name__, (optimizer.__class__,),
                dict(_DistributedOptimizer.__dict__))
 
-    return cls(optimizer.param_groups, named_parameters, compression)
+    return cls(optimizer.param_groups, named_parameters, warmup_steps, compression)
 
 def broadcast_parameters(params, root_rank):
     """
