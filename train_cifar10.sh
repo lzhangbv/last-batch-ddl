@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # model training settings
-dataset=cifar10
+dataset="${dataset:-cifar10}"
 dnn="${dnn:-resnet110}"
 
 # first-order hyper
@@ -27,9 +27,11 @@ use_pretrained_model="${use_pretrained_model:-0}"
 
 # last batch hyper
 last_batch="${last_batch:-1}"
+last_batch_warmup="${last_batch_warmup:-0}"
+
 
 horovod="${horovod:-0}"
-params="--dataset $dataset --dir /datasets/cifar10 --model $dnn --batch-size $batch_size --base-lr $base_lr --lr-schedule $lr_schedule --lr-decay $lr_decay --epochs $epochs --warmup-epochs $warmup_epochs --momentum $momentum --use-adam $use_adam --weight-decay $weight_decay --label-smoothing $label_smoothing --mixup $mixup --cutmix $cutmix --autoaugment $autoaugment --cutout $cutout --use-pretrained-model $use_pretrained_model --last-batch $last_batch"
+params="--dataset $dataset --dir /datasets/cifar10 --model $dnn --batch-size $batch_size --base-lr $base_lr --lr-schedule $lr_schedule --lr-decay $lr_decay --epochs $epochs --warmup-epochs $warmup_epochs --momentum $momentum --use-adam $use_adam --weight-decay $weight_decay --label-smoothing $label_smoothing --mixup $mixup --cutmix $cutmix --autoaugment $autoaugment --cutout $cutout --use-pretrained-model $use_pretrained_model --last-batch $last_batch --last-batch-warmup $last_batch_warmup"
 
 nworkers="${nworkers:-4}"
 rdma="${rdma:-1}"

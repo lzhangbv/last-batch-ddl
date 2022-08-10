@@ -89,6 +89,8 @@ def initialize():
     # Last-batch Parameters
     parser.add_argument('--last-batch', type=int, default=1,
                         help='enable last batch optimizations')
+    parser.add_argument('--last-batch-warmup', type=int, default=1,
+                        help='enable last batch warmup with synchronous algorithms')
 
     # Other Parameters
     parser.add_argument('--log-dir', default='./logs',
@@ -241,7 +243,8 @@ def get_model(args):
 
     args.base_lr = args.base_lr * hvd.size()
     if args.use_adam:
-        optimizer = optim.Adam(model.parameters(), 
+        #optimizer = optim.Adam(model.parameters(), 
+        optimizer = optim.AdamW(model.parameters(), 
                 lr=args.base_lr, 
                 betas=(0.9, 0.999), 
                 weight_decay=args.weight_decay)
@@ -249,20 +252,20 @@ def get_model(args):
         optimizer = optim.SGD(model.parameters(), 
                 lr=args.base_lr, 
                 momentum=args.momentum,
-                weight_decay=args.weight_decay)
+                weight_decay=args.weight_decay, 
+                nesterov=False)
 
     if args.last_batch:
-        #optimizer = hvd.DistributedOptimizer(optimizer, named_parameters=model.named_parameters(), warmup_steps=0)
-        optimizer = hvd.DistributedOptimizer(optimizer, named_parameters=model.named_parameters(), warmup_steps=args.warmup_epochs * args.num_steps_per_epoch)
+        warmup_steps = args.warmup_epochs * args.num_steps_per_epochs if args.last_batch_warmup else 0
+        optimizer = hvd.DistributedOptimizer(optimizer, named_parameters=model.named_parameters(), warmup_steps=warmup_steps)
     else:
         model = torch.nn.parallel.DistributedDataParallel(model, device_ids=[args.local_rank])
 
     # Learning Rate Schedule
     if args.lr_schedule == 'cosine':
-        #lrs = create_cosine_lr_schedule(args.warmup_epochs * args.num_steps_per_epoch, args.epochs * args.num_steps_per_epoch)
-        #if args.last_batch: 
-            #lrs = create_cosine_lr_schedule_with_window(args.warmup_epochs * args.num_steps_per_epoch, args.num_steps_per_epoch, args.epochs * args.num_steps_per_epoch)
-        lrs = create_cosine_lr_schedule_with_window(args.warmup_epochs * args.num_steps_per_epoch, 0, args.epochs * args.num_steps_per_epoch)
+        lrs = create_cosine_lr_schedule(args.warmup_epochs * args.num_steps_per_epoch, args.epochs * args.num_steps_per_epoch)
+        if args.last_batch_warmup: 
+            lrs = create_cosine_lr_schedule_with_window(args.warmup_epochs * args.num_steps_per_epoch, 0, args.epochs * args.num_steps_per_epoch)
     elif args.lr_schedule == 'polynomial':
         lrs = create_polynomial_lr_schedule(args.base_lr, args.warmup_epochs * args.num_steps_per_epoch, args.epochs * args.num_steps_per_epoch, lr_end=0.0, power=2.0)
     elif args.lr_schedule == 'step':
