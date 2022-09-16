@@ -17,7 +17,7 @@ strhdlr.setFormatter(formatter)
 logger.addHandler(strhdlr) 
 
 import wandb
-#wandb = False
+wandb = False
 
 import torch
 import torch.nn as nn
@@ -89,8 +89,10 @@ def initialize():
     # Last-batch Parameters
     parser.add_argument('--last-batch', type=int, default=1,
                         help='enable last batch optimizations')
-    parser.add_argument('--last-batch-warmup', type=int, default=1,
-                        help='enable last batch warmup with synchronous algorithms')
+    parser.add_argument('--sync-warmup', type=int, default=0,
+                        help='enable synchronous warmup')
+    parser.add_argument('--switch-decay', type=int, default=0,
+                        help='enable switch decay')
 
     # Other Parameters
     parser.add_argument('--log-dir', default='./logs',
@@ -135,7 +137,7 @@ def initialize():
     # Logging Settings
     os.makedirs(args.log_dir, exist_ok=True)
     logfile = os.path.join(args.log_dir,
-        '{}_{}_ep{}_bs{}_gpu{}_lb{}_{}_warmup{}_cutmix{}_aa{}.log'.format(args.dataset, args.model, args.epochs, args.batch_size, hvd.size(), args.last_batch, args.lr_schedule,args.warmup_epochs, args.cutmix, args.autoaugment))
+        '{}_{}_ep{}_bs{}_gpu{}_lb{}_sw{}_sd{}.log'.format(args.dataset, args.model, args.epochs, args.batch_size, hvd.size(), args.last_batch, args.sync_warmup, args.switch_decay))
 
     hdlr = logging.FileHandler(logfile)
     hdlr.setFormatter(formatter)
@@ -256,7 +258,7 @@ def get_model(args):
                 nesterov=False)
 
     if args.last_batch:
-        warmup_steps = args.warmup_epochs * args.num_steps_per_epochs if args.last_batch_warmup else 0
+        warmup_steps = args.warmup_epochs * args.num_steps_per_epoch if args.sync_warmup else 0
         optimizer = hvd.DistributedOptimizer(optimizer, named_parameters=model.named_parameters(), warmup_steps=warmup_steps)
     else:
         model = torch.nn.parallel.DistributedDataParallel(model, device_ids=[args.local_rank])
@@ -264,8 +266,8 @@ def get_model(args):
     # Learning Rate Schedule
     if args.lr_schedule == 'cosine':
         lrs = create_cosine_lr_schedule(args.warmup_epochs * args.num_steps_per_epoch, args.epochs * args.num_steps_per_epoch)
-        if args.last_batch_warmup: 
-            lrs = create_cosine_lr_schedule_with_window(args.warmup_epochs * args.num_steps_per_epoch, 0, args.epochs * args.num_steps_per_epoch)
+        if args.switch_decay: 
+            lrs = create_cosine_lr_schedule_with_decay(args.warmup_epochs * args.num_steps_per_epoch, args.epochs * args.num_steps_per_epoch)
     elif args.lr_schedule == 'polynomial':
         lrs = create_polynomial_lr_schedule(args.base_lr, args.warmup_epochs * args.num_steps_per_epoch, args.epochs * args.num_steps_per_epoch, lr_end=0.0, power=2.0)
     elif args.lr_schedule == 'step':

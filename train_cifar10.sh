@@ -2,12 +2,12 @@
 
 # model training settings
 dataset="${dataset:-cifar10}"
-dnn="${dnn:-resnet110}"
+dnn="${dnn:-resnet32}"
 
 # first-order hyper
 batch_size="${batch_size:-128}"
 base_lr="${base_lr:-0.1}"
-lr_schedule="${lr_schedule:-step}"
+lr_schedule="${lr_schedule:-cosine}"
 lr_decay="${lr_decay:-0.5 0.75}"
 
 epochs="${epochs:-100}"
@@ -27,11 +27,11 @@ use_pretrained_model="${use_pretrained_model:-0}"
 
 # last batch hyper
 last_batch="${last_batch:-1}"
-last_batch_warmup="${last_batch_warmup:-0}"
-
+sync_warmup="${sync_warmup:-0}"
+switch_decay="${switch_decay:-0}"
 
 horovod="${horovod:-0}"
-params="--dataset $dataset --dir /datasets/cifar10 --model $dnn --batch-size $batch_size --base-lr $base_lr --lr-schedule $lr_schedule --lr-decay $lr_decay --epochs $epochs --warmup-epochs $warmup_epochs --momentum $momentum --use-adam $use_adam --weight-decay $weight_decay --label-smoothing $label_smoothing --mixup $mixup --cutmix $cutmix --autoaugment $autoaugment --cutout $cutout --use-pretrained-model $use_pretrained_model --last-batch $last_batch --last-batch-warmup $last_batch_warmup"
+params="--dataset $dataset --dir /datasets/cifar10 --model $dnn --batch-size $batch_size --base-lr $base_lr --lr-schedule $lr_schedule --lr-decay $lr_decay --epochs $epochs --warmup-epochs $warmup_epochs --momentum $momentum --use-adam $use_adam --weight-decay $weight_decay --label-smoothing $label_smoothing --mixup $mixup --cutmix $cutmix --autoaugment $autoaugment --cutout $cutout --use-pretrained-model $use_pretrained_model --last-batch $last_batch --sync-warmup $sync_warmup --switch-decay $switch_decay"
 
 nworkers="${nworkers:-4}"
 rdma="${rdma:-1}"

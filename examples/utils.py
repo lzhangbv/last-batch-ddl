@@ -230,15 +230,12 @@ def create_cosine_lr_schedule(num_warmup_steps, num_training_steps, num_cycles=0
         return max(0.0, 0.5 * (1.0 + math.cos(math.pi * float(num_cycles) * 2.0 * progress)))
     return lr_schedule
 
-def create_cosine_lr_schedule_with_window(num_warmup_steps, num_window_steps, num_training_steps, num_cycles=0.5):
+def create_cosine_lr_schedule_with_decay(num_warmup_steps, num_training_steps, num_cycles=0.5):
     def lr_schedule(current_step: int):
         if current_step < num_warmup_steps:
-            return float(current_step) / float(max(1, num_warmup_steps))
-        elif current_step < num_warmup_steps + num_window_steps:
-            #return 0.2 * float(current_step - num_warmup_steps) / float(num_window_steps)
-            return 0.2
-        progress = float(current_step - num_warmup_steps - num_window_steps) / float(max(1, num_training_steps - num_warmup_steps - num_window_steps))
-        return 0.2 * max(0.0, 0.5 * (1.0 + math.cos(math.pi * float(num_cycles) * 2.0 * progress)))
+            return 2.0 * float(current_step) / float(max(1, num_warmup_steps))
+        progress = float(current_step - num_warmup_steps) / float(max(1, num_training_steps - num_warmup_steps))
+        return 0.4 * max(0.0, 0.5 * (1.0 + math.cos(math.pi * float(num_cycles) * 2.0 * progress)))
     return lr_schedule
 
 # F1mc: sample pseudo labels from model distributions
