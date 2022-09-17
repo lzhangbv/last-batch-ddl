@@ -6,7 +6,6 @@ base_lr=0.1
 lr_schedule=cosine
 warmup=5
 
-#dnn=vgg16
 dnn=resnet32
 dataset=cifar10
 #last_batch=0 sync_warmup=0 switch_decay=0 dnn=$dnn dataset=$dataset epochs=$epochs batch_size=128 base_lr=$base_lr nworkers=4 lr_schedule=$lr_schedule warmup_epochs=$warmup horovod=0 node_rank=1 ./train_cifar10.sh & 
@@ -36,10 +35,29 @@ dataset=cifar100
 #last_batch=1 sync_warmup=1 switch_decay=0 dnn=$dnn dataset=$dataset epochs=$epochs batch_size=128 base_lr=$base_lr nworkers=4 lr_schedule=$lr_schedule warmup_epochs=$warmup horovod=0 node_rank=16 ./train_cifar10.sh &
 
 # other optimizers: Adagrad, NAG, Adam, AdamW
-base_lr=0.003
-weight_decay=0.05
-last_batch_warmup=0
+dnn=resnet32
+dataset=cifar10
+#dnn=vgg16
+#dataset=cifar100
 
-#use_adam=1 last_batch=0 sync_warmup=$sync_warmup switch_decay=$switch_decay dnn=$dnn dataset=$dataset epochs=$epochs batch_size=128 base_lr=$base_lr weight_decay=$weight_decay nworkers=4 lr_schedule=$lr_schedule warmup_epochs=$warmup horovod=0 node_rank=15 ./train_cifar10.sh &
-#use_adam=1 last_batch=1 sync_warmup=$sync_warmup switch_decay=$switch_decay dnn=$dnn dataset=$dataset epochs=$epochs batch_size=128 base_lr=$base_lr weight_decay=$weight_decay nworkers=4 lr_schedule=$lr_schedule warmup_epochs=$warmup horovod=0 node_rank=16 ./train_cifar10.sh &
+opt_name=adagrad
+base_lr=0.01
+#last_batch=0 opt_name=$opt_name dnn=$dnn dataset=$dataset epochs=$epochs batch_size=128 base_lr=$base_lr nworkers=4 lr_schedule=$lr_schedule warmup_epochs=$warmup horovod=0 node_rank=1 ./train_cifar10.sh & 
+#last_batch=1 opt_name=$opt_name dnn=$dnn dataset=$dataset epochs=$epochs batch_size=128 base_lr=$base_lr nworkers=4 lr_schedule=$lr_schedule warmup_epochs=$warmup horovod=0 node_rank=2 ./train_cifar10.sh &
+
+opt_name=nag
+base_lr=0.1
+#last_batch=0 opt_name=$opt_name dnn=$dnn dataset=$dataset epochs=$epochs batch_size=128 base_lr=$base_lr nworkers=4 lr_schedule=$lr_schedule warmup_epochs=$warmup horovod=0 node_rank=3 ./train_cifar10.sh & 
+#last_batch=1 opt_name=$opt_name dnn=$dnn dataset=$dataset epochs=$epochs batch_size=128 base_lr=$base_lr nworkers=4 lr_schedule=$lr_schedule warmup_epochs=$warmup horovod=0 node_rank=4 ./train_cifar10.sh &
+
+opt_name=adam
+base_lr=0.001
+#last_batch=0 opt_name=$opt_name dnn=$dnn dataset=$dataset epochs=$epochs batch_size=128 base_lr=$base_lr nworkers=4 lr_schedule=$lr_schedule warmup_epochs=$warmup horovod=0 node_rank=5 ./train_cifar10.sh & 
+#last_batch=1 opt_name=$opt_name dnn=$dnn dataset=$dataset epochs=$epochs batch_size=128 base_lr=$base_lr nworkers=4 lr_schedule=$lr_schedule warmup_epochs=$warmup horovod=0 node_rank=6 ./train_cifar10.sh &
+
+opt_name=adamw
+base_lr=0.001
+weight_decay=0.05
+#last_batch=0 opt_name=$opt_name weight_decay=$weight_decay dnn=$dnn dataset=$dataset epochs=$epochs batch_size=128 base_lr=$base_lr nworkers=4 lr_schedule=$lr_schedule warmup_epochs=$warmup horovod=0 node_rank=7 ./train_cifar10.sh & 
+#last_batch=1 opt_name=$opt_name weight_decay=$weight_decay dnn=$dnn dataset=$dataset epochs=$epochs batch_size=128 base_lr=$base_lr nworkers=4 lr_schedule=$lr_schedule warmup_epochs=$warmup horovod=0 node_rank=8 ./train_cifar10.sh &
 

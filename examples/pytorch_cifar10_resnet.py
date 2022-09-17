@@ -79,8 +79,8 @@ def initialize():
                         help='use autoaugment (default: 0)')
     parser.add_argument('--cutout', type=int, default=0, metavar='WE',
                         help='use cutout augment (default: 0)')
-    parser.add_argument('--use-adam', type=int, default=0, metavar='WE',
-                        help='use adam optimizer (default: 0)')
+    parser.add_argument('--opt-name', type=str, default='sgd',
+                        choices=['sgd', 'nag', 'adagrad', 'adam', 'adamw'], help='base optimizer')
     parser.add_argument('--use-pretrained-model', type=int, default=0, metavar='WE',
                         help='use pretrained model e.g. ViT-B_16 (default: 0)')
     parser.add_argument('--pretrained-dir', type=str, default='/datasets/pretrained_models/',
@@ -137,7 +137,7 @@ def initialize():
     # Logging Settings
     os.makedirs(args.log_dir, exist_ok=True)
     logfile = os.path.join(args.log_dir,
-        '{}_{}_ep{}_bs{}_gpu{}_lb{}_sw{}_sd{}.log'.format(args.dataset, args.model, args.epochs, args.batch_size, hvd.size(), args.last_batch, args.sync_warmup, args.switch_decay))
+        '{}_{}_ep{}_bs{}_gpu{}_lb{}_sw{}_sd{}_{}.log'.format(args.dataset, args.model, args.epochs, args.batch_size, hvd.size(), args.last_batch, args.sync_warmup, args.switch_decay, args.opt_name))
 
     hdlr = logging.FileHandler(logfile)
     hdlr.setFormatter(formatter)
@@ -244,12 +244,26 @@ def get_model(args):
         criterion = nn.CrossEntropyLoss()
 
     args.base_lr = args.base_lr * hvd.size()
-    if args.use_adam:
-        #optimizer = optim.Adam(model.parameters(), 
+    if args.opt_name == "adam":
+        optimizer = optim.Adam(model.parameters(), 
+                lr=args.base_lr, 
+                betas=(0.9, 0.999), 
+                weight_decay=args.weight_decay)
+    elif args.opt_name == "adamw":
         optimizer = optim.AdamW(model.parameters(), 
                 lr=args.base_lr, 
                 betas=(0.9, 0.999), 
                 weight_decay=args.weight_decay)
+    elif args.opt_name == "adagrad":
+        optimizer = optim.Adagrad(model.parameters(), 
+                lr=args.base_lr, 
+                weight_decay=args.weight_decay)
+    elif args.opt_name == "nag":
+        optimizer = optim.SGD(model.parameters(), 
+                lr=args.base_lr, 
+                momentum=args.momentum,
+                weight_decay=args.weight_decay, 
+                nesterov=True)
     else:
         optimizer = optim.SGD(model.parameters(), 
                 lr=args.base_lr, 

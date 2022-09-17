@@ -14,7 +14,7 @@ epochs="${epochs:-100}"
 warmup_epochs="${warmup_epochs:-5}"
 
 momentum="${momentum:-0.9}"
-use_adam="${use_adam:-0}"
+opt_name="${opt_name:-sgd}"
 weight_decay="${weight_decay:-0.0005}"
 
 # tricks
@@ -31,7 +31,7 @@ sync_warmup="${sync_warmup:-0}"
 switch_decay="${switch_decay:-0}"
 
 horovod="${horovod:-0}"
-params="--dataset $dataset --dir /datasets/cifar10 --model $dnn --batch-size $batch_size --base-lr $base_lr --lr-schedule $lr_schedule --lr-decay $lr_decay --epochs $epochs --warmup-epochs $warmup_epochs --momentum $momentum --use-adam $use_adam --weight-decay $weight_decay --label-smoothing $label_smoothing --mixup $mixup --cutmix $cutmix --autoaugment $autoaugment --cutout $cutout --use-pretrained-model $use_pretrained_model --last-batch $last_batch --sync-warmup $sync_warmup --switch-decay $switch_decay"
+params="--dataset $dataset --dir /datasets/cifar10 --model $dnn --batch-size $batch_size --base-lr $base_lr --lr-schedule $lr_schedule --lr-decay $lr_decay --epochs $epochs --warmup-epochs $warmup_epochs --momentum $momentum --opt-name $opt_name --weight-decay $weight_decay --label-smoothing $label_smoothing --mixup $mixup --cutmix $cutmix --autoaugment $autoaugment --cutout $cutout --use-pretrained-model $use_pretrained_model --last-batch $last_batch --sync-warmup $sync_warmup --switch-decay $switch_decay"
 
 nworkers="${nworkers:-4}"
 rdma="${rdma:-1}"
