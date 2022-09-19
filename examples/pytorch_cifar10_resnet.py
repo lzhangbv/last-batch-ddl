@@ -29,7 +29,6 @@ import torch.multiprocessing as mp
 
 import cifar_resnet as resnet
 from cifar_wide_resnet import Wide_ResNet
-from cifar_pyramidnet import ShakePyramidNet
 from cifar_vgg import VGG
 from vit import VisionTransformer, ViT_CONFIGS  
 from efficientnet import EfficientNet
@@ -210,8 +209,6 @@ def get_model(args):
         model = Wide_ResNet(28, 10, 0.0, num_classes=num_classes)
     elif args.model.lower() == "wrn28-20":
         model = Wide_ResNet(28, 20, 0.0, num_classes=num_classes)
-    elif args.model.lower() == "pyramidnet":
-        model = ShakePyramidNet(depth=110, alpha=270, num_classes=num_classes)
     elif args.model.lower() == "vgg16":
         model = VGG("VGG16", num_classes=num_classes)
     elif args.model.lower() == "vgg19":
@@ -220,15 +217,6 @@ def get_model(args):
         vit_config = ViT_CONFIGS[ "vit-b16"]
         model = VisionTransformer(vit_config, img_size=224, zero_head=True, num_classes=num_classes)
         model.load_from(np.load(args.pretrained_dir + "ViT-B_16.npz"))
-    elif args.model.lower() == "vit-b16" and not args.use_pretrained_model:
-        vit_config = ViT_CONFIGS[ "vit-b16"]
-        model = VisionTransformer(vit_config, img_size=32, num_classes=num_classes)
-    elif args.model.lower() == "vit-s8":
-        vit_config = ViT_CONFIGS[ "vit-s8"]
-        model = VisionTransformer(vit_config, img_size=32, num_classes=num_classes)
-    elif args.model.lower() == "vit-t8":
-        vit_config = ViT_CONFIGS[ "vit-t8"]
-        model = VisionTransformer(vit_config, img_size=32, num_classes=num_classes)
     elif "efficientnet" in args.model.lower() and args.use_pretrained_model:
         model = EfficientNet.from_pretrained(args.model.lower(), 
                 weights_path=args.pretrained_dir + args.model.lower() + ".pth",

@@ -28,7 +28,8 @@ import torch.utils.data.distributed
 from torch.optim.lr_scheduler import LambdaLR
 import torchvision
 from torchvision import datasets, transforms
-import horovod.torch as hvd
+#import horovod.torch as hvd
+from opt import fpdp as hvd
 import torch.distributed as dist
 from tqdm import tqdm
 from distutils.version import LooseVersion
@@ -36,8 +37,7 @@ import imagenet_resnet as models
 import imagenet_inceptionv4 as inceptionv4
 from utils import *
 
-import kfac
-os.environ['HOROVOD_NUM_NCCL_STREAMS'] = '10' 
+#os.environ['HOROVOD_NUM_NCCL_STREAMS'] = '10' 
 
 STEP_FIRST = LooseVersion(torch.__version__) < LooseVersion('1.1.0')
 
@@ -75,6 +75,8 @@ def initialize():
                         help='number of epochs to train')
     parser.add_argument('--base-lr', type=float, default=0.0125,
                         help='learning rate for a single GPU')
+    parser.add_argument('--lr-schedule', type=str, default='step', 
+                        choices=['step', 'polynomial', 'cosine'], help='learning rate schedules')
     parser.add_argument('--lr-decay', nargs='+', type=int, default=[30, 60, 80],
                         help='epoch intervals to decay lr')
     parser.add_argument('--warmup-epochs', type=float, default=5,
@@ -85,64 +87,34 @@ def initialize():
                         help='weight decay')
     parser.add_argument('--label-smoothing', type=float, default=0.1,
                         help='label smoothing (default 0.1)')
-
-    # KFAC Parameters
-    parser.add_argument('--kfac-name', type=str, default='inverse',
-            help='choises: %s' % kfac.kfac_mappers.keys() + ', default: '+'inverse')
-    parser.add_argument('--exclude-parts', type=str, default='',
-            help='choises: CommunicateInverse,ComputeInverse,CommunicateFactor,ComputeFactor')
-    parser.add_argument('--kfac-update-freq', type=int, default=10,
-                        help='iters between kfac inv ops (0 = no kfac) (default: 10)')
-    parser.add_argument('--kfac-cov-update-freq', type=int, default=1,
-                        help='iters between kfac cov ops (default: 1)')
-    parser.add_argument('--kfac-update-freq-alpha', type=float, default=10,
-                        help='KFAC update freq multiplier (default: 10)')
-    parser.add_argument('--kfac-update-freq-decay', nargs='+', type=int, default=None,
-                        help='KFAC update freq schedule (default None)')
-    parser.add_argument('--stat-decay', type=float, default=0.95,
-                        help='Alpha value for covariance accumulation (default: 0.95)')
-    parser.add_argument('--damping', type=float, default=0.03,
-                        help='KFAC damping factor (default 0.03)')
-    parser.add_argument('--damping-alpha', type=float, default=0.5,
-                        help='KFAC damping decay factor (default: 0.5)')
-    parser.add_argument('--damping-decay', nargs='+', type=int, default=[40, 80],
-                        help='KFAC damping decay schedule (default [40, 80])')
-    parser.add_argument('--kl-clip', type=float, default=0.01,
-                        help='KL clip (default: 0.01)')
-    parser.add_argument('--diag-blocks', type=int, default=1,
-                        help='Number of blocks to approx layer factor with (default: 1)')
-    parser.add_argument('--diag-warmup', type=int, default=0,
-                        help='Epoch to start diag block approximation at (default: 0)')
-    parser.add_argument('--distribute-layer-factors', action='store_true', default=None,
-                        help='Compute A and G for a single layer on different workers. '
-                              'None to determine automatically based on worker and '
-                              'layer count.')
-
+    
+    # Last-batch Parameters
+    parser.add_argument('--last-batch', type=int, default=1,
+                        help='enable last batch optimizations')
+    parser.add_argument('--sync-warmup', type=int, default=0,
+                        help='enable synchronous warmup')
+    parser.add_argument('--switch-decay', type=int, default=0,
+                        help='enable switch decay')
+    
+    # Other Parameters
     parser.add_argument('--no-cuda', action='store_true', default=False,
                         help='disables CUDA training')
     parser.add_argument('--single-threaded', action='store_true', default=False,
                         help='disables multi-threaded dataloading')
     parser.add_argument('--seed', type=int, default=42,
                         help='random seed')
+    parser.add_argument('--local_rank', type=int, default=0,
+                        help='local rank for distributed training')
 
     args = parser.parse_args()
     args.cuda = not args.no_cuda and torch.cuda.is_available()
 
     # Comm backend init
-    if args.horovod:
-        if args.kfac_name in ["inverse_kaisa", "inverse_dp_hybrid"]:
-            hvd.init(process_sets="dynamic")
-        else:
-            hvd.init()
-        backend.init("Horovod")
-    else:
-        dist.init_process_group(backend='nccl', init_method='env://')
-        backend.init("Torch")
-
-    args.local_rank = backend.comm.local_rank()
+    dist.init_process_group(backend='nccl', init_method='env://')
+    args.local_rank = int(os.environ['LOCAL_RANK'])
 
     torch.manual_seed(args.seed)
-    args.verbose = 1 if backend.comm.rank() == 0 else 0
+    args.verbose = 1 if hvd.rank() == 0 else 0
     #if args.verbose:
     #    logger.info(args)
 
@@ -153,8 +125,8 @@ def initialize():
     cudnn.benchmark = True
 
     args.log_dir = os.path.join(args.log_dir, 
-                                "imagenet_resnet50_kfac{}_gpu_{}_{}".format(
-                                args.kfac_update_freq, backend.comm.size(),
+                                "imagenet_resnet50_gpu{}_lb{}_{}".format(
+                                hvd.size(), args.last_batch, 
                                 datetime.now().strftime('%Y-%m-%d_%H-%M-%S')))
     args.checkpoint_format=os.path.join(args.log_dir, args.checkpoint_format)
     #os.makedirs(args.log_dir, exist_ok=True)
@@ -166,22 +138,8 @@ def initialize():
             args.resume_from_epoch = try_epoch
             break
 
-    # Horovod: write TensorBoard logs on first worker.
-    try:
-        if LooseVersion(torch.__version__) >= LooseVersion('1.2.0'):
-            from torch.utils.tensorboard import SummaryWriter
-        else:
-            from tensorboardX import SummaryWriter
-        #args.log_writer = SummaryWriter(args.log_dir) if hvd.rank() == 0 else None
-        args.log_writer = None
-    except ImportError:
-        args.log_writer = None
-
-    #logfile = './logs/timing_imagenet_thres1024_{}_kfac{}_gpu{}_bs{}_{}_ep_{}.log'.format(args.model, args.kfac_update_freq, hvd.size(), args.batch_size, args.kfac_name, args.exclude_parts)
-    logfile = './logs/imagenet_{}_kfac{}_gpu{}_bs{}_{}_ep_{}.log'.format(args.model, args.kfac_update_freq, backend.comm.size(), args.batch_size, args.kfac_name, args.exclude_parts)
-    #logfile = './logs/inverse_imagenet_resnet50_kfac{}_gpu{}_bs{}.log'.format(args.kfac_update_freq, hvd.size(), args.batch_size)
-    #logfile = './logs/imagenet_resnet50_kfac{}_gpu{}_bs{}.log'.format(args.kfac_update_freq, hvd.size(), args.batch_size)
-    #logfile = './logs/sparse_imagenet_resnet50_kfac{}_gpu{}_bs{}.log'.format(args.kfac_update_freq, hvd.size(), args.batch_size)
+    logfile = './logs/imagenet_{}_gpu{}_bs{}_ep{}_lb{}.log'.format(args.model, hvd.size(), args.batch_size, args.epochs, args.last_batch)
+    
     hdlr = logging.FileHandler(logfile)
     hdlr.setFormatter(formatter)
     logger.addHandler(hdlr) 
@@ -219,12 +177,12 @@ def get_datasets(args):
     # Horovod: use DistributedSampler to partition data among workers. Manually specify
     # `num_replicas=hvd.size()` and `rank=hvd.rank()`.
     train_sampler = torch.utils.data.distributed.DistributedSampler(
-            train_dataset, num_replicas=backend.comm.size(), rank=backend.comm.rank())
+            train_dataset, num_replicas=hvd.size(), rank=hvd.rank())
     train_loader = torch.utils.data.DataLoader(
             train_dataset, batch_size=args.batch_size * args.batches_per_allreduce,
             sampler=train_sampler, **kwargs)
     val_sampler = torch.utils.data.distributed.DistributedSampler(
-            val_dataset, num_replicas=backend.comm.size(), rank=backend.comm.rank())
+            val_dataset, num_replicas=hvd.size(), rank=hvd.rank())
     val_loader = torch.utils.data.DataLoader(
             val_dataset, batch_size=args.val_batch_size,
             sampler=val_sampler, **kwargs)
@@ -263,45 +221,16 @@ def get_model(args):
         model.cuda()
 
     # Horovod: scale learning rate by the number of GPUs.
-    args.base_lr = args.base_lr * backend.comm.size() * args.batches_per_allreduce
+    args.base_lr = args.base_lr * hvd.size() * args.batches_per_allreduce
     optimizer = optim.SGD(model.parameters(), lr=args.base_lr,
                           momentum=args.momentum, weight_decay=args.wd)
     #optimizer = optim.Adam(model.parameters(), lr=args.base_lr, betas=(0.9, 0.98), eps=1e-09)
 
-    if args.kfac_update_freq > 0:
-        KFAC = kfac.get_kfac_module(args.kfac_name)
-        preconditioner = KFAC(
-                model, lr=args.base_lr, factor_decay=args.stat_decay,
-                damping=args.damping, kl_clip=args.kl_clip,
-                fac_update_freq=args.kfac_cov_update_freq,
-                kfac_update_freq=args.kfac_update_freq,
-                #diag_blocks=args.diag_blocks,
-                #diag_warmup=args.diag_warmup,
-                #distribute_layer_factors=args.distribute_layer_factors, 
-                exclude_parts=args.exclude_parts)
-        kfac_param_scheduler = kfac.KFACParamScheduler(
-                preconditioner,
-                damping_alpha=args.damping_alpha,
-                damping_schedule=args.damping_decay,
-                update_freq_alpha=args.kfac_update_freq_alpha,
-                update_freq_schedule=args.kfac_update_freq_decay,
-                start_epoch=args.resume_from_epoch)
+    if args.last_batch:
+        warmup_steps = args.warmup_epochs * args.num_steps_per_epoch if args.sync_warmup else 0
+        optimizer = hvd.DistributedOptimizer(optimizer, named_parameters=model.named_parameters(), warmup_steps=warmup_steps)
     else:
-        preconditioner = None
-
-    if args.horovod:
-        compression = hvd.Compression.fp16 if args.fp16_allreduce else hvd.Compression.none
-        optimizer = hvd.DistributedOptimizer(
-                optimizer, named_parameters=model.named_parameters(),
-                compression=compression, op=hvd.Average,
-                backward_passes_per_step=args.batches_per_allreduce)
-    
-        # Horovod: broadcast parameters & optimizer state.
-        if hvd.size() > 1:
-            hvd.broadcast_parameters(model.state_dict(), root_rank=0)
-            hvd.broadcast_optimizer_state(optimizer, root_rank=0)
-    else:
-        model = torch.nn.parallel.DistributedDataParallel(model, device_ids=[args.local_rank]) 
+        model = torch.nn.parallel.DistributedDataParallel(model, device_ids=[args.local_rank])
 
     # Restore from a previous checkpoint, if initial_epoch is specified.
     # Horovod: restore on the first worker which will broadcast weights 
@@ -312,18 +241,22 @@ def get_model(args):
         model.load_state_dict(checkpoint['model'])
         optimizer.load_state_dict(checkpoint['optimizer'])
 
-
-    lrs = create_lr_schedule(backend.comm.size(), args.warmup_epochs, args.lr_decay)
-    lr_scheduler = [LambdaLR(optimizer, lrs)]
-    if preconditioner is not None:
-        lr_scheduler.append(LambdaLR(preconditioner, lrs))
-        lr_scheduler.append(kfac_param_scheduler)
-
+    # Learning Rate Schedule
+    if args.lr_schedule == 'cosine':
+        lrs = create_cosine_lr_schedule(args.warmup_epochs * args.num_steps_per_epoch, args.epochs * args.num_steps_per_epoch)
+        if args.switch_decay: 
+            lrs = create_cosine_lr_schedule_with_decay(args.warmup_epochs * args.num_steps_per_epoch, args.epochs * args.num_steps_per_epoch)
+    elif args.lr_schedule == 'polynomial':
+        lrs = create_polynomial_lr_schedule(args.base_lr, args.warmup_epochs * args.num_steps_per_epoch, args.epochs * args.num_steps_per_epoch, lr_end=0.0, power=2.0)
+    elif args.lr_schedule == 'step':
+        lrs = create_multi_step_lr_schedule(hvd.size(), args.warmup_epochs, args.lr_decay, args.lr_decay_alpha)
+    
+    lr_scheduler = LambdaLR(optimizer, lrs)
     loss_func = LabelSmoothLoss(args.label_smoothing)
 
-    return model, optimizer, preconditioner, lr_scheduler, lrs, loss_func
+    return model, optimizer, lr_scheduler, loss_func
 
-def train(epoch, model, optimizer, preconditioner, lr_schedules, lrs,
+def train(epoch, model, optimizer, lr_scheduler,
           loss_func, train_sampler, train_loader, args):
 
     model.train()
@@ -331,25 +264,15 @@ def train(epoch, model, optimizer, preconditioner, lr_schedules, lrs,
     train_loss = Metric('train_loss')
     train_accuracy = Metric('train_accuracy')
     avg_time = 0.0
+    ittimes = []
     display=20
 
-    if STEP_FIRST:
-        for scheduler in lr_schedules:
-            scheduler.step()
-
-    #with tqdm(total=len(train_loader), 
-    #          desc='Epoch {:3d}/{:3d}'.format(epoch + 1, args.epochs),
-    #          disable=not args.verbose) as t:
     profiling=True
-    iotimes = [];fwbwtimes=[];kfactimes=[];commtimes=[];uptimes=[]
-    ittimes = []
     if True:
         for batch_idx, (data, target) in enumerate(train_loader):
             stime = time.time()
             if args.cuda:
                 data, target = data.cuda(), target.cuda()
-            iotime = time.time()
-            iotimes.append(iotime-stime)
 
             optimizer.zero_grad()
             for i in range(0, len(data), args.batch_size):
@@ -365,60 +288,36 @@ def train(epoch, model, optimizer, preconditioner, lr_schedules, lrs,
 
                 loss.div_(math.ceil(float(len(data)) / args.batch_size))
                 loss.backward()        
-            fwbwtime = time.time()
-            fwbwtimes.append(fwbwtime-iotime)
 
-            if args.horovod:
-                optimizer.synchronize()
-            commtime = time.time()
-            commtimes.append(commtime-fwbwtime)
-            if preconditioner is not None:
-                preconditioner.step(epoch=epoch)
-            kfactime = time.time()
-            kfactimes.append(kfactime-commtime)
-            if args.horovod:
-                with optimizer.skip_synchronize():
-                    optimizer.step()
-            else:
-                optimizer.step()
-            updatetime=time.time()
-            uptimes.append(updatetime-kfactime)
+            optimizer.step()
             avg_time += (time.time()-stime)
 
-            #print("----------Memory Allocated after optimizer.step: %.1f (MB)----------" % (torch.cuda.max_memory_allocated()/1024/1024))
-            
             if batch_idx > 0 and batch_idx % display == 0:
-                if args.verbose and SPEED:
-                    logger.info("[%d][%d] loss: %.4f, acc: %.2f, time: %.3f, speed: %.3f images/s" % (epoch, batch_idx, train_loss.avg.item(), 100*train_accuracy.avg.item(), avg_time/display, args.batch_size/(avg_time/display)))
-                    logger.info('Profiling: IO: %.3f, FW+BW: %.3f, COMM: %.3f, KFAC: %.3f, STEP: %.3f', np.mean(iotimes), np.mean(fwbwtimes), np.mean(commtimes), np.mean(kfactimes), np.mean(uptimes))
-                    iotimes = [];fwbwtimes=[];kfactimes=[];commtimes=[]
+                if args.verbose:
+                    logger.info("[%d][%d] loss: %.4f, acc: %.2f, time: %.3f" % (epoch, batch_idx, train_loss.avg.item(), 100*train_accuracy.avg.item(), avg_time/display))
                 ittimes.append(avg_time/display)
                 avg_time = 0.0
             if batch_idx > 120 and SPEED:
                 if args.verbose:
                     logger.info("Iteration time: mean %.3f, std: %.3f" % (np.mean(ittimes[1:]),np.std(ittimes[1:])))
                 break
+        
+            if not args.lr_schedule == 'step':
+                lr_scheduler.step()
+        
         if args.verbose:
             logger.info("[%d] epoch train loss: %.4f, acc: %.3f" % (epoch, train_loss.avg.item(), 100*train_accuracy.avg.item()))
 
-    if not STEP_FIRST:
-        for scheduler in lr_schedules:
-            scheduler.step()
+    
+        if args.lr_schedule == 'step':
+            lr_scheduler.step()
 
-    if args.log_writer is not None:
-        args.log_writer.add_scalar('train/loss', train_loss.avg, epoch)
-        args.log_writer.add_scalar('train/accuracy', train_accuracy.avg, epoch)
-        args.log_writer.add_scalar('train/lr', args.base_lr * lrs(epoch), epoch)
 
 def validate(epoch, model, loss_func, val_loader, args):
     model.eval()
     val_loss = Metric('val_loss')
     val_accuracy = Metric('val_accuracy')
 
-    #with tqdm(total=len(val_loader),
-    #          bar_format='{l_bar}{bar}|{postfix}',
-    #          desc='             '.format(epoch + 1, args.epochs),
-    #          disable=not args.verbose) as t:
     if True:
         with torch.no_grad():
             for i, (data, target) in enumerate(val_loader):
@@ -430,23 +329,14 @@ def validate(epoch, model, loss_func, val_loader, args):
             if args.verbose:
                 logger.info("[%d][0] evaluation loss: %.4f, acc: %.3f" % (epoch, val_loss.avg.item(), 100*val_accuracy.avg.item()))
 
-                #t.update(1)
-                #if i + 1 == len(val_loader):
-                #    t.set_postfix_str("\b\b val_loss: {:.4f}, val_acc: {:.2f}%".format(
-                #            val_loss.avg.item(), 100*val_accuracy.avg.item()),
-                #            refresh=False)
-
-    if args.log_writer is not None:
-        args.log_writer.add_scalar('val/loss', val_loss.avg, epoch)
-        args.log_writer.add_scalar('val/accuracy', val_accuracy.avg, epoch)
-
 if __name__ == '__main__':
     torch.multiprocessing.set_start_method('spawn')
 
     args = initialize()
 
     train_sampler, train_loader, _, val_loader = get_datasets(args)
-    model, opt, preconditioner, lr_schedules, lrs, loss_func = get_model(args)
+    args.num_steps_per_epoch = len(train_loader)
+    model, opt, lr_scheduler, loss_func = get_model(args)
 
     if args.verbose:
         logger.info("MODEL: %s", args.model)
@@ -454,7 +344,7 @@ if __name__ == '__main__':
     start = time.time()
 
     for epoch in range(args.resume_from_epoch, args.epochs):
-        train(epoch, model, opt, preconditioner, lr_schedules, lrs,
+        train(epoch, model, opt, lr_scheduler,
              loss_func, train_sampler, train_loader, args)
         if not SPEED:
             validate(epoch, model, loss_func, val_loader, args)
