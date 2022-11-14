@@ -1,8 +1,11 @@
 # Last Batch Optimization for Distributed DNN Training
 
 ## Introduction
-This repository implements last-batch optimization to accelerate distributed DNN training 
-by fully pipelining the feed-forward and back-propagation computations with the last-batch gradient communications. 
+This repository implements last-batch optimization to accelerate distributed DNN training. Specifically, it uses the stale gradient on the last
+mini-batch to update the model parameter at the current mini-batch, which enables the last batch gradient aggregation (communication) to be fully overlapped with the current batch gradient computation, including both feed-forward and back-propagation passes. We also propose two simple
+but effective training tricks to reduce the impact of using last batch gradient on convergence. 
+
+For more information, please check [PDF](https://github.com/lzhangbv/last-batch-opt/blob/main/LB-OPT.pdf).  
 
 ## Usage
 
@@ -36,4 +39,16 @@ Before running the scripts, please carefully configure the configuration files i
 ```
 $ mkdir logs
 $ bash batch.sh
+```
+
+## Citation
+If you use this code in your work, please cite: 
+
+```
+@misc{zhang2022lbopt,
+    title = {Last Batch Optimization for Distributed DNN Training},
+    author = {Zhang, Lin and Shi, Shaohuai and Li, Bo},
+    howpublished = {\url{https://github.com/lzhangbv/last-batch-opt}},
+    year=2022,
+}
 ```
